@@ -23,6 +23,7 @@
 //              since the date was set. Final 30 days: one node per day.
 //   Moon     — moonlight; one lunar cycle with new moon at top and nodes at the
 //              four principal phases. The marker shows the current phase.
+//   Seconds  — mint green; a seconds hand travelling the rim, 12 nodes.
 //   Moon & Mars — how far each is from Earth: 12 o'clock is closest (Earth-blue
 //              node), 6 o'clock farthest, scaled to each body's own range. Left
 //              side = approaching, right = moving away. Distances come from the
@@ -49,17 +50,17 @@
 #define ENGINES   33
 #define ANIM_MS   30
 #define HOLD_MS   450  // all 33 lit at the end of the startup sequence
-#define SWAP_MS   5000  // how long a flick keeps another complication up
 #define DAY_MIN   1440
 #define NO_TIME   (-1)
 #define NO_DATE   INT32_MIN
 #define TERMINAL_DAYS 30
-#define SETTINGS_REV  4    // bump when appending fields that need non-zero defaults
+#define SETTINGS_REV  5    // bump when appending fields that need non-zero defaults
 
 enum { FLAME_ORANGE = 0, FLAME_METHANE, FLAME_WHITE, FLAME_COUNT };
-enum { RIM_HOURS = 0, RIM_STEPS, RIM_DAY, RIM_MONTH, RIM_TMINUS, RIM_MOON, RIM_ORBITS, RIM_COUNT };
+enum { RIM_HOURS = 0, RIM_STEPS, RIM_DAY, RIM_MONTH, RIM_TMINUS, RIM_MOON, RIM_ORBITS, RIM_SECONDS,
+       RIM_COUNT };
 enum { ORDER_DIAL = 0, ORDER_STARTUP = 1 };
-enum { FLICK_CYCLE = 0, FLICK_ONE = 1 };
+enum { FLICK_CYCLE = 0, FLICK_ONE = 1, FLICK_ARRANGE_OLD = 2 };   // 2: pre-release mode, now a toggle
 
 typedef struct {
   uint8_t flame;
@@ -84,6 +85,9 @@ typedef struct {
   bool show_date;       // flick also shows the date readout
   bool tap_screen;      // a tap on the touchscreen does what a flick does
   bool pulse_minutes;   // the current minute engine pulses (battery cost)
+  bool flick_rearrange; // a flick also swaps the engine order while it's up
+  bool show_seconds;    // rev 5: fits in old padding, so the rev check sets it
+  uint8_t flick_secs;   // how long a flick stays up: 5, 8 or 10 (0 in old blobs -> 8)
 } Settings;
 
 typedef struct {
@@ -114,6 +118,7 @@ static int32_t s_steps = 0;
 static int s_anim_step = -1;     // startup sequence: engines lit so far, or -1 when done
 static uint64_t s_startup_t0;    // when the startup sequence began
 static int s_r = DESIGN_R;
+static void update_tick_subscription(void);
 
 // Flame palettes: outer rim, mid, core. All on the 64-color palette.
 static const uint32_t FLAMES[FLAME_COUNT][3] = {
@@ -128,6 +133,7 @@ static const uint32_t FLAMES[FLAME_COUNT][3] = {
 #define COLOR_MOON   0xAAAAFF
 #define COLOR_MARS   0xFF5500
 #define COLOR_EARTH  0x55AAFF
+#define COLOR_SECONDS 0x55FFAA
 
 // ---------------------------------------------------------------- dates
 
@@ -181,6 +187,9 @@ static void default_settings(void) {
   s_cfg.show_date = true;
   s_cfg.tap_screen = true;
   s_cfg.pulse_minutes = false;
+  s_cfg.flick_rearrange = false;
+  s_cfg.show_seconds = true;
+  s_cfg.flick_secs = 8;
 }
 
 static void load_state(void) {
@@ -204,6 +213,11 @@ static void load_state(void) {
       migrated = true;
     }
     // Saved before the Moon & Mars complication (v1.3): turn it on by default.
+    // Saved before the Seconds complication: turn it on by default.
+    if (s_cfg.rev < 5) {
+      s_cfg.show_seconds = true;
+      migrated = true;
+    }
     if (s_cfg.rev < 4) {
       s_cfg.show_orbits = true;
       migrated = true;
@@ -217,7 +231,13 @@ static void load_state(void) {
   if (s_cfg.rim >= RIM_COUNT) s_cfg.rim = RIM_HOURS;
   if (s_cfg.step_goal <= 0) s_cfg.step_goal = 8000;
   if (s_cfg.engine_order > ORDER_STARTUP) s_cfg.engine_order = ORDER_DIAL;
+  // The short-lived "Rearrange engines" flick mode became a separate toggle.
+  if (s_cfg.flick_mode == FLICK_ARRANGE_OLD) {
+    s_cfg.flick_mode = FLICK_CYCLE;
+    s_cfg.flick_rearrange = true;
+  }
   if (s_cfg.flick_mode > FLICK_ONE) s_cfg.flick_mode = FLICK_CYCLE;
+  if (s_cfg.flick_secs != 5 && s_cfg.flick_secs != 8 && s_cfg.flick_secs != 10) s_cfg.flick_secs = 8;
   if (s_cfg.flick_target >= RIM_COUNT) s_cfg.flick_target = RIM_STEPS;
   if (persist_exists(SUN_KEY)) persist_read_data(SUN_KEY, &s_sun, sizeof(s_sun));
   if (persist_exists(ORBIT_KEY)) persist_read_data(ORBIT_KEY, &s_orb, sizeof(s_orb));
@@ -324,6 +344,12 @@ static void fx_start(int ch, int dur) {
 // 3-12 inner ring and 13-32 outer ring, each clockwise from 12 o'clock.
 #define AM_ENGINE 0
 
+// A Rearrange flick swaps the engine order (Startup <-> Dial) for a while.
+static bool s_order_swapped = false;
+static bool startup_order(void) {
+  return (s_cfg.engine_order == ORDER_STARTUP) != s_order_swapped;
+}
+
 // Hour engines in lighting order.
 // Dial: inner ring clockwise from ~1 o'clock round to the top (hour 10), then
 // the two lower center engines for 11 and 12.
@@ -356,7 +382,7 @@ static void time_engines(bool lit[ENGINES], int *newest, int *pulsing) {
   memset(lit, 0, ENGINES * sizeof(bool));
   *newest = -1;
   *pulsing = -1;
-  bool startup = s_cfg.engine_order == ORDER_STARTUP;
+  bool startup = startup_order();
   lit[AM_ENGINE] = s_now.tm_hour < 12;
   int h = s_now.tm_hour % 12;
   if (h == 0) h = 12;
@@ -455,7 +481,7 @@ static void engines_transition(void) {
     s_prev_valid = true;
     return;
   }
-  bool startup = s_cfg.engine_order == ORDER_STARTUP;
+  bool startup = startup_order();
   const uint8_t *ho = startup ? HOUR_STARTUP : HOUR_DIAL;
   const uint8_t *mo = startup ? MIN_STARTUP : MIN_DIAL;
   uint8_t order[ENGINES];                        // lighting order: AM, hours, minutes
@@ -824,6 +850,14 @@ static void rim_orbits(GContext *ctx, GPoint c) {
   }
 }
 
+// --- Seconds: a seconds hand on the rim. The face only ticks every second
+// while this is on screen.
+static void rim_seconds(GContext *ctx, GPoint c) {
+  int32_t a[12];
+  even_nodes(a, 12);
+  draw_timeline(ctx, c, a, 12, TRIG_MAX_ANGLE * s_now.tm_sec / 60, COLOR_SECONDS);
+}
+
 static bool rim_enabled(int mode) {
   switch (mode) {
     case RIM_HOURS:  return true;
@@ -833,6 +867,7 @@ static bool rim_enabled(int mode) {
     case RIM_TMINUS: return s_cfg.show_tminus;
     case RIM_MOON:   return s_cfg.show_moon;
     case RIM_ORBITS: return s_cfg.show_orbits;
+    case RIM_SECONDS: return s_cfg.show_seconds;
     default:         return false;
   }
 }
@@ -845,6 +880,7 @@ static void draw_rim(GContext *ctx, GPoint c) {
     case RIM_TMINUS: rim_tminus(ctx, c); break;
     case RIM_MOON:   rim_moon(ctx, c); break;
     case RIM_ORBITS: rim_orbits(ctx, c); break;
+    case RIM_SECONDS: rim_seconds(ctx, c); break;
     default:         rim_hours(ctx, c); break;
   }
 }
@@ -1080,6 +1116,7 @@ static void update_pulse(void) {
 static void focus_handler(bool in_focus) {
   s_focused = in_focus;                 // pause while a notification covers the face
   update_pulse();
+  update_tick_subscription();
 }
 
 // ---------------------------------------------------------------- startup sequence
@@ -1157,6 +1194,9 @@ static void request_data(int need) {
 
 static int shown_rim(void) { return s_showing >= 0 ? s_showing : s_cfg.rim; }
 
+// How long a flick keeps another complication up.
+static uint32_t swap_ms(void) { return (uint32_t)s_cfg.flick_secs * 1000; }
+
 static void close_band(void) {
   if (s_date_up && !s_band_closing) {
     s_band_closing = true;
@@ -1166,10 +1206,16 @@ static void close_band(void) {
 
 static void swap_timeout(void *data) {
   s_swap_timer = NULL;
+  if (s_order_swapped) {                       // engines slide back to their order
+    s_order_swapped = false;
+    engines_transition();
+    update_pulse();
+  }
   int before = shown_rim();
   s_showing = -1;
   if (shown_rim() != before) fx_start(FX_RIM, RIM_SWEEP_MS);
   close_band();
+  update_tick_subscription();
   layer_mark_dirty(s_canvas);
 }
 
@@ -1177,7 +1223,8 @@ static void swap_timeout(void *data) {
 // showing; stepping past the last one returns to the default.
 // One mode: a flick shows the chosen complication; another flick while it is
 // up returns to the default.
-// With Show date on, the date readout is up for as long as the flick is.
+// With Show date on, the date readout is up for as long as the flick is; with
+// Rearrange on, the engine order is swapped (Startup <-> Dial) for as long too.
 static void flick_action(void) {
   // One gesture can arrive twice (a firm screen tap also jolts the
   // accelerometer; a flick can report two taps): ignore repeats.
@@ -1185,8 +1232,10 @@ static void flick_action(void) {
   uint64_t now = now_ms();
   if (now - last < 400) return;
   last = now;
-  // One mode set to the default rim with the date off has nothing to show.
-  if (s_cfg.flick_mode == FLICK_ONE && s_cfg.flick_target == s_cfg.rim && !s_cfg.show_date) return;
+  // One mode set to the default rim, with the date and rearranging off, has
+  // nothing to show.
+  if (s_cfg.flick_mode == FLICK_ONE && s_cfg.flick_target == s_cfg.rim &&
+      !s_cfg.show_date && !s_cfg.flick_rearrange) return;
   bool was_up = s_swap_timer != NULL;
   int before = shown_rim();
   int next = -1;
@@ -1201,10 +1250,17 @@ static void flick_action(void) {
       if (m == s_cfg.rim) break;               // wrapped round to the default
       if (rim_enabled(m)) { next = m; break; }
     }
-    // Up while a complication is showing; with none, the date alone toggles.
-    up = next >= 0 || (!was_up && s_cfg.show_date);
+    // Up while a complication is showing; with none, the date or the
+    // rearranged engines alone toggle.
+    up = next >= 0 || (!was_up && (s_cfg.show_date || s_cfg.flick_rearrange));
   }
   s_showing = up ? next : -1;
+  bool swap = up && s_cfg.flick_rearrange;
+  if (swap != s_order_swapped && s_anim_step < 0) {
+    s_order_swapped = swap;
+    engines_transition();                      // flame out, then flare into place
+    update_pulse();
+  }
   if (shown_rim() != before) fx_start(FX_RIM, RIM_SWEEP_MS);
   if (up && s_cfg.show_date) {
     if (!s_date_up || s_band_closing) {           // open (or reopen) the band
@@ -1219,10 +1275,11 @@ static void flick_action(void) {
   if (!up) {
     if (s_swap_timer) { app_timer_cancel(s_swap_timer); s_swap_timer = NULL; }
   } else if (s_swap_timer) {
-    app_timer_reschedule(s_swap_timer, SWAP_MS);
+    app_timer_reschedule(s_swap_timer, swap_ms());
   } else {
-    s_swap_timer = app_timer_register(SWAP_MS, swap_timeout, NULL);
+    s_swap_timer = app_timer_register(swap_ms(), swap_timeout, NULL);
   }
+  update_tick_subscription();
   layer_mark_dirty(s_canvas);
 }
 
@@ -1305,6 +1362,10 @@ static void update_touch_subscription(void) {}   // no touchscreen on this watch
 
 static void tick_handler(struct tm *t, TimeUnits changed) {
   s_now = *t;
+  if (!(changed & MINUTE_UNIT)) {                // a seconds tick: just move the hand
+    layer_mark_dirty(s_canvas);
+    return;
+  }
   // Ask the phone for fresh sun times (daily) and distances (every 3 hours).
   int need = (s_sun.yday != t->tm_yday ? NEED_SUN : 0) |
              (time(NULL) - s_orb.updated > 3 * 60 * 60 ? NEED_ORBIT : 0);
@@ -1325,6 +1386,18 @@ static void tick_handler(struct tm *t, TimeUnits changed) {
   }
   update_pulse();
   layer_mark_dirty(s_canvas);
+}
+
+// Tick every second only while the Seconds complication is on screen.
+static TimeUnits s_tick_units = 0;
+static void update_tick_subscription(void) {
+  TimeUnits want = (shown_rim() == RIM_SECONDS && s_focused) ? SECOND_UNIT : MINUTE_UNIT;
+  if (want == s_tick_units) return;
+  s_tick_units = want;
+  time_t now = time(NULL);
+  s_now = *localtime(&now);                      // seconds may be stale
+  tick_timer_service_subscribe(want, tick_handler);
+  if (s_canvas) layer_mark_dirty(s_canvas);
 }
 
 static void connection_handler(bool connected) {
@@ -1367,12 +1440,19 @@ static void inbox_received(DictionaryIterator *it, void *context) {
     changed = true;
   }
   if ((t = dict_find(it, MESSAGE_KEY_FlickMode))) {
-    s_cfg.flick_mode = tuple_int(t) == FLICK_ONE ? FLICK_ONE : FLICK_CYCLE;
+    int fm = tuple_int(t);
+    if (fm == FLICK_ARRANGE_OLD) s_cfg.flick_rearrange = true;   // old settings page value
+    s_cfg.flick_mode = fm == FLICK_ONE ? FLICK_ONE : FLICK_CYCLE;
     changed = true;
   }
   if ((t = dict_find(it, MESSAGE_KEY_FlickTarget))) {
     int m = tuple_int(t);
     s_cfg.flick_target = (m >= 0 && m < RIM_COUNT) ? m : RIM_STEPS;
+    changed = true;
+  }
+  if ((t = dict_find(it, MESSAGE_KEY_FlickSeconds))) {
+    int fs = tuple_int(t);
+    s_cfg.flick_secs = (fs == 5 || fs == 10) ? fs : 8;
     changed = true;
   }
   if ((t = dict_find(it, MESSAGE_KEY_EngineOrder))) {
@@ -1394,9 +1474,11 @@ static void inbox_received(DictionaryIterator *it, void *context) {
   READ_FLAG(ShowTMinus, show_tminus)
   READ_FLAG(ShowMoon, show_moon)
   READ_FLAG(ShowOrbits, show_orbits)
+  READ_FLAG(ShowSeconds, show_seconds)
   READ_FLAG(ShowDate, show_date)
   READ_FLAG(TapScreen, tap_screen)
   READ_FLAG(PulseMinutes, pulse_minutes)
+  READ_FLAG(FlickRearrange, flick_rearrange)
   if ((t = dict_find(it, MESSAGE_KEY_TMinusDate))) {
     int32_t day = t->type == TUPLE_CSTRING ? parse_date(t->value->cstring) : NO_DATE;
     if (day != s_cfg.tminus_day) {               // a new target restarts the long count
@@ -1412,6 +1494,7 @@ static void inbox_received(DictionaryIterator *it, void *context) {
     if (s_anim_step < 0) engines_transition();   // order or pulse may have changed
     if (shown_rim() != rim_before) fx_start(FX_RIM, RIM_SWEEP_MS);
     update_pulse();
+    update_tick_subscription();
   }
 
   Tuple *moon_km = dict_find(it, MESSAGE_KEY_MoonDistKm);
@@ -1477,7 +1560,7 @@ static void init(void) {
   app_message_register_inbox_received(inbox_received);
   app_message_open(256, 64);
 
-  tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
+  update_tick_subscription();
   s_connected = connection_service_peek_pebble_app_connection();
   connection_service_subscribe((ConnectionHandlers) {
     .pebble_app_connection_handler = connection_handler,

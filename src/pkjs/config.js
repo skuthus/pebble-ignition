@@ -21,15 +21,27 @@ module.exports = [
           { label: 'Month', value: '3' },
           { label: 'T-minus countdown', value: '4' },
           { label: 'Moon', value: '5' },
-          { label: 'Moon & Mars distance', value: '6' }
+          { label: 'Moon & Mars distance', value: '6' },
+          { label: 'Seconds', value: '7' }
         ]
       },
       {
         type: 'toggle',
         messageKey: 'FlickSwap',
         label: 'Flick wrist for complications',
-        description: 'The rim returns to the default after 5 seconds.',
         defaultValue: true
+      },
+      {
+        type: 'select',
+        messageKey: 'FlickSeconds',
+        label: 'Flick lasts',
+        description: 'How long a flick keeps the other complication up before the rim returns to the default.',
+        defaultValue: '8',
+        options: [
+          { label: '5 seconds', value: '5' },
+          { label: '8 seconds', value: '8' },
+          { label: '10 seconds', value: '10' }
+        ]
       },
       {
         type: 'toggle',
@@ -62,8 +74,16 @@ module.exports = [
           { label: 'Month', value: '3' },
           { label: 'T-minus countdown', value: '4' },
           { label: 'Moon', value: '5' },
-          { label: 'Moon & Mars distance', value: '6' }
+          { label: 'Moon & Mars distance', value: '6' },
+          { label: 'Seconds', value: '7' }
         ]
+      },
+      {
+        type: 'toggle',
+        messageKey: 'FlickRearrange',
+        label: 'Flick also rearranges engines',
+        description: 'While a flick is up, the engines switch between the startup sequence and the clock-like dial arrangement, then switch back with the rim. For rearranging alone, set Flick shows to One, pick your default rim and turn Show date off.',
+        defaultValue: false
       },
       {
         type: 'toggle',
@@ -122,6 +142,13 @@ module.exports = [
         messageKey: 'ShowOrbits',
         label: 'Moon & Mars distance',
         description: 'How far each is from Earth. 12 o\'clock (the blue Earth node) is closest, 6 o\'clock farthest, scaled to each one\'s range: Moon 356,400-406,700 km, Mars 0.37-2.68 AU. Left side = getting closer, right side = moving away.',
+        defaultValue: true
+      },
+      {
+        type: 'toggle',
+        messageKey: 'ShowSeconds',
+        label: 'Seconds',
+        description: 'Mint green. A seconds hand travelling the rim, a node every 5 seconds. The face redraws every second while this is showing, so as the default rim it uses noticeably more battery; as a flick complication it costs very little.',
         defaultValue: true
       },
       {

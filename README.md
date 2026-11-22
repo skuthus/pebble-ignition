@@ -37,17 +37,21 @@ is now. It shows one complication at a time:
 | T-minus | A countdown to a date you choose |
 | Moon | One lunar cycle, with tonight's phase drawn in the marker |
 | Moon & Mars | How far each is from Earth right now, and whether it's getting closer |
+| Seconds | A seconds hand travelling the rim |
 
 **Flick your wrist** (or **tap the screen** on the Round 2) to cycle through the
 complications you've turned on, or to show one chosen complication, along with a
-date readout. It returns to your default after five seconds.
+date readout. It returns to your default after 5, 8 or 10 seconds (your choice).
+Optionally, a flick also rearranges the engines between the startup sequence and
+the clock-like dial while it's up.
 
 There's also an easter egg for the next time Mars swings closest to Earth.
 
 ## Settings
 
 Everything is in the watchface's settings page in the Pebble app: default rim,
-which complications to cycle, flick and tap behaviour, step goal, countdown date,
+which complications to cycle, flick and tap behaviour (including how long a flick
+lasts and whether it rearranges the engines), step goal, countdown date,
 engine lighting order (clock-like or startup sequence), flame colour (orange,
 methane blue-violet, white), an optional pulse for the current minute, and a
 vibration when your phone disconnects.

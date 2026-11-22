@@ -52,7 +52,10 @@
       "ShowDate",
       "TapScreen",
       "MarsClosestDay",
-      "PulseMinutes"
+      "PulseMinutes",
+      "FlickRearrange",
+      "ShowSeconds",
+      "FlickSeconds"
     ],
     "resources": {
       "media": []
