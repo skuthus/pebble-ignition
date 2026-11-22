@@ -1,0 +1,61 @@
+{
+  "name": "ignition-face",
+  "author": "Skyler",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Ignition",
+    "uuid": "6a7c8f74-6b54-4d5b-af96-27d33fdc7da8",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "gabbro",
+      "chalk"
+    ],
+    "capabilities": [
+      "configurable",
+      "health",
+      "location"
+    ],
+    "watchapp": {
+      "watchface": true
+    },
+    "messageKeys": [
+      "Flame",
+      "VibeDisconnect",
+      "RimMode",
+      "StepGoal",
+      "FlickSwap",
+      "ShowSteps",
+      "ShowDay",
+      "ShowMonth",
+      "ShowTMinus",
+      "TMinusDate",
+      "Sunrise",
+      "Sunset",
+      "SolarNoon",
+      "RequestSun",
+      "EngineOrder",
+      "ShowMoon",
+      "SouthHemi",
+      "ShowOrbits",
+      "MoonDistKm",
+      "MoonApproach",
+      "MarsDistMilliAU",
+      "MarsApproach",
+      "FlickMode",
+      "FlickTarget",
+      "ShowDate",
+      "TapScreen",
+      "MarsClosestDay",
+      "PulseMinutes"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
