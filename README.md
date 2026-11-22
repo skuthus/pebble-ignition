@@ -1,7 +1,10 @@
 # Ignition
 
-33 engines away from making life multiplanetary with this stellar watchface.
-Moonphase and Mars transit complications, launch countdowns, and much more.
+33 engines away from making life multiplanetary with this stellar watch face.
+Moon phase and Mars transit complications, launch countdowns, and much more.
+
+**[Get Ignition on the Rebble appstore](https://apps.rebble.io/en_US/application/6b025987bb43f20009804f0a)**
+(it also appears in the Pebble app's store).
 
 <p align="center">
   <img src="store/screenshots/gabbro-1-ignition.gif" width="260" alt="Ignition's startup sequence: engines flare from the center outward, then settle on the time">
