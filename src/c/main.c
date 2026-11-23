@@ -61,6 +61,7 @@ enum { RIM_HOURS = 0, RIM_STEPS, RIM_DAY, RIM_MONTH, RIM_TMINUS, RIM_MOON, RIM_O
        RIM_COUNT };
 enum { ORDER_DIAL = 0, ORDER_STARTUP = 1 };
 enum { FLICK_CYCLE = 0, FLICK_ONE = 1, FLICK_ARRANGE_OLD = 2 };   // 2: pre-release mode, now a toggle
+enum { READOUT_BAND = 0, READOUT_THROTTLE = 1 };
 
 typedef struct {
   uint8_t flame;
@@ -88,6 +89,7 @@ typedef struct {
   bool flick_rearrange; // a flick also swaps the engine order while it's up
   bool show_seconds;    // rev 5: fits in old padding, so the rev check sets it
   uint8_t flick_secs;   // how long a flick stays up: 5, 8 or 10 (0 in old blobs -> 8)
+  uint8_t readout;      // what Show date shows: READOUT_BAND, or READOUT_THROTTLE (0 in old blobs)
 } Settings;
 
 typedef struct {
@@ -190,6 +192,7 @@ static void default_settings(void) {
   s_cfg.flick_rearrange = false;
   s_cfg.show_seconds = true;
   s_cfg.flick_secs = 8;
+  s_cfg.readout = READOUT_BAND;
 }
 
 static void load_state(void) {
@@ -239,6 +242,7 @@ static void load_state(void) {
   if (s_cfg.flick_mode > FLICK_ONE) s_cfg.flick_mode = FLICK_CYCLE;
   if (s_cfg.flick_secs != 5 && s_cfg.flick_secs != 8 && s_cfg.flick_secs != 10) s_cfg.flick_secs = 8;
   if (s_cfg.flick_target >= RIM_COUNT) s_cfg.flick_target = RIM_STEPS;
+  if (s_cfg.readout > READOUT_THROTTLE) s_cfg.readout = READOUT_BAND;
   if (persist_exists(SUN_KEY)) persist_read_data(SUN_KEY, &s_sun, sizeof(s_sun));
   if (persist_exists(ORBIT_KEY)) persist_read_data(ORBIT_KEY, &s_orb, sizeof(s_orb));
 }
@@ -267,7 +271,9 @@ static int sc(int v) { return v * s_r / DESIGN_R; }
 #define OFF_SPAN_MS     420   // a whole shutdown sequence, first to last engine
 #define ON_STEP_MS      70    // stagger between engines igniting together
 
-enum { FX_RIM, FX_ENGINES, FX_BAND, FX_SHAKE, FX_STARTUP, FX_COUNT };
+enum { FX_RIM, FX_ENGINES, FX_BAND, FX_SHAKE, FX_STARTUP, FX_THROTTLE, FX_COUNT };
+
+static void td_phase_end(void);
 
 typedef struct {
   uint64_t start;
@@ -327,6 +333,7 @@ static void fx_frame(void *data) {
     if (now - s_fx[ch].start >= s_fx[ch].dur) {
       s_fx[ch].on = false;
       if (ch == FX_BAND && s_band_closing) { s_band_closing = false; s_date_up = false; }
+      if (ch == FX_THROTTLE) td_phase_end();
     } else {
       any = true;
     }
@@ -932,6 +939,243 @@ static void draw_date_readout(GContext *ctx, GPoint c) {
                      GTextOverflowModeFill, GTextAlignmentCenter, NULL);
 }
 
+
+// ---------------------------------------------------------------- throttle-down readout
+//
+// The other flick readout. A flick throttles the lit engines down to embers and
+// the time and date glow over them. When the flick ends the engines relight in
+// startup order; once every one is back at full, their heat works on the
+// lettering: white, then amber, orange and dull red, then charred black with a
+// glowing rim, and finally it crumbles into embers that drift up and cool to ash.
+
+enum { TD_OFF, TD_DOWN, TD_HOLD, TD_UP };
+#define TD_DOWN_MS      350   // engines throttle to embers, lettering glows up
+#define TD_RELIGHT_STEP 25    // between engines relighting, in startup order
+#define TD_HEAT_AT      1300  // into TD_UP: every engine is back at full
+#define TD_SPREAD       2     // heat reaches the lettering's outer parts later (ms per px)
+#define TD_JITTER       31    // ...and each pixel up to this much later, so it looks organic
+#define TD_AMBER        140   // heat ages: white -> yellow -> amber -> orange -> red -> char
+#define TD_ORANGE       280
+#define TD_RED          420
+#define TD_CHAR         560
+#define TD_CRUMBLE      900   // charred for a beat, then it crumbles...
+#define TD_CRUMBLE_MS   600   // ...over this long
+#define TD_ASH_MS       700   // how long a fleck drifts
+#define TD_UP_MS        (TD_HEAT_AT + 140 * TD_SPREAD + TD_JITTER + TD_CRUMBLE + TD_CRUMBLE_MS + TD_ASH_MS)
+
+// Embers for each flame: throttling down, then throttled (outer, mid, core).
+static const uint32_t EMBERS[FLAME_COUNT][2][3] = {
+  { { 0xAA0000, 0xFF5500, 0xFF5500 }, { 0x550000, 0x550000, 0xAA0000 } },
+  { { 0x0000AA, 0x5500AA, 0xAA55FF }, { 0x000055, 0x000055, 0x5500AA } },
+  { { 0x555555, 0xAAAAAA, 0xAAAAAA }, { 0x555555, 0x555555, 0xAAAAAA } },
+};
+static const uint32_t TD_DATE[FLAME_COUNT] = { 0xFFAA55, 0xAAAAFF, 0xAAAAAA };
+
+static uint8_t s_td = TD_OFF;
+static int s_td_el;                  // ms into the current phase, fixed for one frame
+static uint8_t s_td_order[ENGINES];  // each engine's place in the startup sequence
+static uint8_t *s_td_mask;           // two bit planes over the text box: lettering, date
+static GRect s_td_box;
+static bool s_td_mask_ok;
+static void update_pulse(void);
+
+static void td_layout(GPoint c, GRect *tr, GRect *dr, GFont *tf, GFont *df, GRect *box) {
+  if (s_r >= 110) {
+    *tf = fonts_get_system_font(FONT_KEY_LECO_42_NUMBERS);
+    *df = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+    *tr = GRect(c.x - 80, c.y - 34, 160, 50);
+    *dr = GRect(c.x - 60, c.y + 16, 120, 24);
+    *box = GRect(c.x - 84, c.y - 40, 168, 84);
+  } else {
+    *tf = fonts_get_system_font(FONT_KEY_LECO_32_BOLD_NUMBERS);
+    *df = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+    *tr = GRect(c.x - 60, c.y - 28, 120, 40);
+    *dr = GRect(c.x - 50, c.y + 9, 100, 18);
+    *box = GRect(c.x - 62, c.y - 30, 124, 62);
+  }
+}
+
+static void td_strings(char *t, int tn, char *d, int dn) {
+  int h = s_now.tm_hour;
+  if (!clock_is_24h_style()) { h %= 12; if (h == 0) h = 12; }
+  snprintf(t, tn, clock_is_24h_style() ? "%02d:%02d" : "%d:%02d", h, s_now.tm_min);
+  snprintf(d, dn, "%s %d %s", DAYS[s_now.tm_wday % 7], s_now.tm_mday, MONTHS[s_now.tm_mon % 12]);
+}
+
+static void td_open(void) {
+  if (s_td == TD_DOWN || s_td == TD_HOLD) return;
+  for (int j = 0; j < ENGINES; j++) s_td_order[s_startup_all[j]] = j;
+  s_td = TD_DOWN;
+  s_td_mask_ok = false;
+  fx_start(FX_THROTTLE, TD_DOWN_MS);
+  update_pulse();                     // the pulse waits while the engines are throttled
+}
+
+static void td_close(void) {
+  if (s_td != TD_DOWN && s_td != TD_HOLD) return;
+  s_td = TD_UP;
+  s_td_mask_ok = false;
+  fx_start(FX_THROTTLE, TD_UP_MS);
+}
+
+static void td_phase_end(void) {
+  if (s_td == TD_DOWN) {
+    s_td = TD_HOLD;                   // still until the flick ends: no frames needed
+  } else if (s_td == TD_UP) {
+    s_td = TD_OFF;
+    if (s_td_mask) { free(s_td_mask); s_td_mask = NULL; }
+    s_td_mask_ok = false;
+    update_pulse();
+  }
+}
+
+// A lit engine while the readout is up: an ember, or relighting.
+static void td_draw_engine(GContext *ctx, GPoint p, int er, int i, bool newest) {
+  int stage = 1;                      // 0 throttling down, 1 throttled
+  if (s_td == TD_DOWN && s_td_el < TD_DOWN_MS / 2) stage = 0;
+  if (s_td == TD_UP) {
+    int at = s_td_order[i] * TD_RELIGHT_STEP;
+    if (s_td_el >= at + FLARE_MS) { draw_engine(ctx, p, er, true, newest); return; }
+    if (s_td_el >= at) { draw_flare(ctx, p, er, (s_td_el - at) * 1000 / FLARE_MS, newest); return; }
+  }
+  const uint32_t *e = EMBERS[s_cfg.flame][stage];
+  graphics_context_set_fill_color(ctx, GColorFromHEX(e[0]));
+  graphics_fill_circle(ctx, p, er);
+  graphics_context_set_fill_color(ctx, GColorFromHEX(e[1]));
+  graphics_fill_circle(ctx, p, er * 70 / 100);
+  graphics_context_set_fill_color(ctx, GColorFromHEX(e[2]));
+  graphics_fill_circle(ctx, p, er * 38 / 100);
+}
+
+static int td_noise(int x, int y) {
+  uint32_t h = (uint32_t)(x * 73856093) ^ (uint32_t)(y * 19349663);
+  h ^= h >> 13; h *= 0x5bd1e995; h ^= h >> 15;
+  return h & 255;
+}
+
+static int td_bits(void) { return s_td_box.size.w * s_td_box.size.h; }
+static bool td_letter(int x, int y) {
+  if (!grect_contains_point(&s_td_box, &GPoint(x, y))) return false;
+  int i = (y - s_td_box.origin.y) * s_td_box.size.w + (x - s_td_box.origin.x);
+  return s_td_mask[i >> 3] & (1 << (i & 7));
+}
+static bool td_is_date(int x, int y) {
+  int i = (y - s_td_box.origin.y) * s_td_box.size.w + (x - s_td_box.origin.x);
+  return s_td_mask[(td_bits() + 7) / 8 + (i >> 3)] & (1 << (i & 7));
+}
+
+// The lettering's shape, read back from the frame buffer: drawn in marker
+// colours on the empty canvas before the engines, recorded, then cleared.
+static void td_build_mask(GContext *ctx, GPoint c) {
+  GRect tr, dr, box; GFont tf, df;
+  td_layout(c, &tr, &dr, &tf, &df, &box);
+  if (!s_td_mask || !grect_equal(&box, &s_td_box)) {
+    if (s_td_mask) free(s_td_mask);
+    s_td_box = box;
+    s_td_mask = malloc((td_bits() + 7) / 8 * 2);
+    if (!s_td_mask) return;
+  }
+  memset(s_td_mask, 0, (td_bits() + 7) / 8 * 2);
+  char t[8], d[16];
+  td_strings(t, sizeof(t), d, sizeof(d));
+  graphics_context_set_text_color(ctx, GColorMagenta);
+  graphics_draw_text(ctx, t, tf, tr, GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+  graphics_context_set_text_color(ctx, GColorCyan);
+  graphics_draw_text(ctx, d, df, dr, GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+  GBitmap *fb = graphics_capture_frame_buffer(ctx);
+  if (!fb) return;
+  int planes = (td_bits() + 7) / 8;
+  for (int y = box.origin.y; y < box.origin.y + box.size.h; y++) {
+    GBitmapDataRowInfo ri = gbitmap_get_data_row_info(fb, y);
+    int x0 = box.origin.x > ri.min_x ? box.origin.x : ri.min_x;
+    int x1 = box.origin.x + box.size.w - 1 < ri.max_x ? box.origin.x + box.size.w - 1 : ri.max_x;
+    for (int x = x0; x <= x1; x++) {
+      uint8_t v = ri.data[x];
+      if (v != GColorMagentaARGB8 && v != GColorCyanARGB8) continue;
+      int i = (y - box.origin.y) * box.size.w + (x - box.origin.x);
+      s_td_mask[i >> 3] |= 1 << (i & 7);
+      if (v == GColorCyanARGB8) s_td_mask[planes + (i >> 3)] |= 1 << (i & 7);
+      ri.data[x] = GColorBlackARGB8;
+    }
+  }
+  graphics_release_frame_buffer(ctx, fb);
+  s_td_mask_ok = true;
+}
+
+// Heat age of one pixel of lettering: ms since the heat reached it.
+static int td_age(GPoint c, int x, int y) {
+  int d = (abs(x - c.x) + abs(y - c.y)) * 3 / 4;
+  return s_td_el - TD_HEAT_AT - d * TD_SPREAD - (td_noise(x, y) & TD_JITTER);
+}
+static int td_crumble_at(int x, int y) { return TD_CRUMBLE + td_noise(y, x) * TD_CRUMBLE_MS / 256; }
+static bool td_gone(GPoint c, int x, int y) {
+  return !td_letter(x, y) || td_age(c, x, y) >= td_crumble_at(x, y);
+}
+
+static void td_draw_text(GContext *ctx, GPoint c) {
+  bool heating = s_td == TD_UP && s_td_el >= TD_HEAT_AT && s_td_mask_ok;
+  if (!heating) {                     // plain lettering, glowing up as the engines drop
+    int k = s_td == TD_DOWN ? 1 + s_td_el * 3 / TD_DOWN_MS : 3;
+    if (k > 3) k = 3;
+    GRect tr, dr, box; GFont tf, df;
+    td_layout(c, &tr, &dr, &tf, &df, &box);
+    char t[8], d[16];
+    td_strings(t, sizeof(t), d, sizeof(d));
+    static const uint32_t TIME_K[3] = { 0x555555, 0xAAAAAA, 0xFFFFFF };
+    static const uint32_t DATE_K[2] = { 0x550000, 0xAA5500 };
+    graphics_context_set_text_color(ctx, GColorFromHEX(TIME_K[k - 1]));
+    graphics_draw_text(ctx, t, tf, tr, GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+    graphics_context_set_text_color(ctx, GColorFromHEX(k == 3 ? TD_DATE[s_cfg.flame] : DATE_K[k - 1]));
+    graphics_draw_text(ctx, d, df, dr, GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+    return;
+  }
+  GBitmap *fb = graphics_capture_frame_buffer(ctx);
+  if (!fb) return;
+  GRect fbb = gbitmap_get_bounds(fb);
+  const uint8_t white = GColorWhiteARGB8, yellow = GColorFromHEX(0xFFFFAA).argb,
+                amber = GColorFromHEX(0xFFAA00).argb, orange = GColorFromHEX(0xFF5500).argb,
+                red = GColorFromHEX(0xAA0000).argb, dark = GColorFromHEX(0x550000).argb,
+                ash = GColorFromHEX(0x555555).argb, date_c = GColorFromHEX(TD_DATE[s_cfg.flame]).argb;
+  GRect b = s_td_box;
+  for (int y = b.origin.y; y < b.origin.y + b.size.h; y++) {
+    GBitmapDataRowInfo ri = gbitmap_get_data_row_info(fb, y);
+    for (int x = b.origin.x; x < b.origin.x + b.size.w; x++) {
+      if (x < ri.min_x || x > ri.max_x || !td_letter(x, y)) continue;
+      int age = td_age(c, x, y);
+      int since = age - td_crumble_at(x, y);
+      if (since >= 0) {
+        // Crumbled: the flames show through. A quarter of the pixels drift off
+        // as embers, lifted by the heat and cooling to ash.
+        if ((td_noise(x, y) & 3) == 0 && since < TD_ASH_MS) {
+          int dx = x - c.x, dy = y - c.y, dist = abs(dx) + abs(dy) + 1;
+          int len = since * (2 + (td_noise(y, x) & 3)) / 40;
+          int px = x + dx * len / dist + ((td_noise(x + 7, y) & 7) - 3) * since / 160;
+          int py = y + dy * len / (2 * dist) - since / 18;
+          if (py >= 0 && py < fbb.size.h) {
+            GBitmapDataRowInfo pr = gbitmap_get_data_row_info(fb, py);
+            if (px >= pr.min_x && px <= pr.max_x)
+              pr.data[px] = since < 120 ? orange : since < 300 ? red : since < 520 ? ash : dark;
+          }
+        }
+        continue;
+      }
+      uint8_t col;
+      if (age < 0) col = td_is_date(x, y) ? date_c : white;
+      else if (age < TD_AMBER) col = td_is_date(x, y) ? amber : yellow;
+      else if (age < TD_ORANGE) col = amber;
+      else if (age < TD_RED) col = orange;
+      else if (age < TD_CHAR) col = red;
+      else {                          // charred black, its edges still glowing
+        bool edge = td_gone(c, x - 1, y) || td_gone(c, x + 1, y) ||
+                    td_gone(c, x, y - 1) || td_gone(c, x, y + 1);
+        col = !edge ? GColorBlackARGB8 : ((td_noise(x, y) + s_td_el / 66) & 3) ? orange : amber;
+      }
+      ri.data[x] = col;
+    }
+  }
+  graphics_release_frame_buffer(ctx, fb);
+}
+
 // ---------------------------------------------------------------- maracas
 //
 // Easter egg for Mars's closest approach: a nod to a well-known photo of a pair
@@ -1006,6 +1250,13 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   graphics_context_set_fill_color(ctx, GColorBlack);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
+  // Throttle-down readout: one clock reading per frame, and the lettering's
+  // shape captured before anything is drawn over it once it starts to burn.
+  s_td_el = fx_elapsed(FX_THROTTLE);
+  if (s_td_el < 0) s_td_el = s_td == TD_UP ? TD_UP_MS : TD_DOWN_MS;
+  if (s_td == TD_UP && s_td_el >= TD_HEAT_AT && !s_td_mask_ok) td_build_mask(ctx, c);
+  bool throttled = s_td == TD_DOWN || s_td == TD_HOLD;
+
   // Engines: the startup sequence on open, then the time.
   bool lit[ENGINES];
   int newest = -1, pulsing = -1;
@@ -1021,7 +1272,7 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   }
   // Thrust puck edge: the band seen from below between the inner 13 engines
   // (hour, AM/PM) and the outer 20 (minutes).
-  graphics_context_set_stroke_color(ctx, GColorFromHEX(0xAAAAAA));
+  graphics_context_set_stroke_color(ctx, GColorFromHEX(throttled ? 0x555555 : 0xAAAAAA));
   graphics_context_set_stroke_width(ctx, sc(2) < 1 ? 1 : sc(2));
   graphics_draw_circle(ctx, c, sc(70));
 
@@ -1037,14 +1288,18 @@ static void canvas_update(Layer *layer, GContext *ctx) {
     }
   } else {
     for (int i = maracas ? 13 : 0; i < ENGINES; i++) {   // maracas replace the inner 13
+      GPoint p = engine_pos(c, i);
+      // The pulse layer waits while the readout is up, so its engine is drawn here.
+      if (s_td != TD_OFF && (lit[i] || i == pulsing)) { td_draw_engine(ctx, p, er, i, i == newest); continue; }
       if (i == pulsing) continue;                      // drawn by the pulse layer
-      draw_engine_now(ctx, engine_pos(c, i), er, i, lit[i], i == newest);
+      draw_engine_now(ctx, p, er, i, lit[i], i == newest);
     }
   }
   if (maracas) draw_maracas(ctx, c);
 
   draw_rim(ctx, c);
   if (s_date_up) draw_date_readout(ctx, c);
+  if (s_td != TD_OFF) td_draw_text(ctx, c);
 }
 
 // ---------------------------------------------------------------- minute pulse
@@ -1093,7 +1348,7 @@ static void update_pulse(void) {
   if (!s_pulse_layer) return;
   bool lit[ENGINES];
   int newest, pulsing = -1;
-  if (s_anim_step < 0 && s_focused) time_engines(lit, &newest, &pulsing);
+  if (s_anim_step < 0 && s_focused && s_td == TD_OFF) time_engines(lit, &newest, &pulsing);
   if (pulsing < 0) {
     if (s_pulse_timer) { app_timer_cancel(s_pulse_timer); s_pulse_timer = NULL; }
     layer_set_hidden(s_pulse_layer, true);
@@ -1204,6 +1459,26 @@ static void close_band(void) {
   }
 }
 
+// The flick readout: the date band, or the throttle-down.
+static void readout_close(void) {
+  close_band();
+  td_close();
+}
+
+static void readout_open(void) {
+  if (s_cfg.readout == READOUT_THROTTLE) {
+    close_band();
+    td_open();
+  } else {
+    td_close();
+    if (!s_date_up || s_band_closing) {           // open (or reopen) the band
+      s_date_up = true;
+      s_band_closing = false;
+      fx_start(FX_BAND, BAND_OPEN_MS);
+    }
+  }
+}
+
 static void swap_timeout(void *data) {
   s_swap_timer = NULL;
   if (s_order_swapped) {                       // engines slide back to their order
@@ -1214,7 +1489,7 @@ static void swap_timeout(void *data) {
   int before = shown_rim();
   s_showing = -1;
   if (shown_rim() != before) fx_start(FX_RIM, RIM_SWEEP_MS);
-  close_band();
+  readout_close();
   update_tick_subscription();
   layer_mark_dirty(s_canvas);
 }
@@ -1262,15 +1537,8 @@ static void flick_action(void) {
     update_pulse();
   }
   if (shown_rim() != before) fx_start(FX_RIM, RIM_SWEEP_MS);
-  if (up && s_cfg.show_date) {
-    if (!s_date_up || s_band_closing) {           // open (or reopen) the band
-      s_date_up = true;
-      s_band_closing = false;
-      fx_start(FX_BAND, BAND_OPEN_MS);
-    }
-  } else {
-    close_band();
-  }
+  if (up && s_cfg.show_date) readout_open();
+  else readout_close();
   if (maracas_time()) fx_start(FX_SHAKE, SHAKE_MS);
   if (!up) {
     if (s_swap_timer) { app_timer_cancel(s_swap_timer); s_swap_timer = NULL; }
@@ -1366,6 +1634,7 @@ static void tick_handler(struct tm *t, TimeUnits changed) {
     layer_mark_dirty(s_canvas);
     return;
   }
+  s_td_mask_ok = false;                          // a burning readout re-reads its lettering
   // Ask the phone for fresh sun times (daily) and distances (every 3 hours).
   int need = (s_sun.yday != t->tm_yday ? NEED_SUN : 0) |
              (time(NULL) - s_orb.updated > 3 * 60 * 60 ? NEED_ORBIT : 0);
@@ -1453,6 +1722,10 @@ static void inbox_received(DictionaryIterator *it, void *context) {
   if ((t = dict_find(it, MESSAGE_KEY_FlickSeconds))) {
     int fs = tuple_int(t);
     s_cfg.flick_secs = (fs == 5 || fs == 10) ? fs : 8;
+    changed = true;
+  }
+  if ((t = dict_find(it, MESSAGE_KEY_FlickReadout))) {
+    s_cfg.readout = tuple_int(t) == READOUT_THROTTLE ? READOUT_THROTTLE : READOUT_BAND;
     changed = true;
   }
   if ((t = dict_find(it, MESSAGE_KEY_EngineOrder))) {

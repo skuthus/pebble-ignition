@@ -12,8 +12,8 @@ Moon phase and Mars transit complications, launch countdowns, and much more.
   <img src="store/screenshots/gabbro-4-mars.png" width="260" alt="Moon and Mars distance complication">
 </p>
 
-Ignition is a watchface for the **Pebble Round 2** and **Pebble Time Round**:
-a booster's engine plate seen from below, where 33 engines tell the time.
+Ignition is a watchface for the **Pebble Round 2**: a booster's engine plate
+seen from below, where 33 engines tell the time.
 
 ## Reading it
 
@@ -42,11 +42,22 @@ is now. It shows one complication at a time:
 | Moon & Mars | How far each is from Earth right now, and whether it's getting closer |
 | Seconds | A seconds hand travelling the rim |
 
-**Flick your wrist** (or **tap the screen** on the Round 2) to cycle through the
-complications you've turned on, or to show one chosen complication, along with a
-date readout. It returns to your default after 5, 8 or 10 seconds (your choice).
+**Flick your wrist** (or **tap the screen**) to cycle through the complications
+you've turned on, or to show one chosen complication, along with a date readout. It returns to your default after 5, 8 or 10 seconds (your choice).
 Optionally, a flick also rearranges the engines between the startup sequence and
 the clock-like dial while it's up.
+
+### Throttle down
+
+<p align="center">
+  <img src="store/screenshots/gabbro-2-throttle.gif" width="260" alt="Throttle down: the engines drop to embers behind the time and date, relight, and the lettering heats, chars black and crumbles away">
+</p>
+
+Set **Flick readout** to **Throttle down** and a flick drops the lit engines to
+embers, with the time and date glowing over them. When the flick ends the engines
+relight in startup order, and once they're all back at full their heat takes the
+lettering from white through amber, orange and red to charred black, until it
+crumbles into embers that drift up and cool to ash.
 
 There's also an easter egg for the next time Mars swings closest to Earth.
 
@@ -54,7 +65,7 @@ There's also an easter egg for the next time Mars swings closest to Earth.
 
 Everything is in the watchface's settings page in the Pebble app: default rim,
 which complications to cycle, flick and tap behaviour (including how long a flick
-lasts and whether it rearranges the engines), step goal, countdown date,
+lasts, whether it rearranges the engines, and the date band or Throttle down), step goal, countdown date,
 engine lighting order (clock-like or startup sequence), flame colour (orange,
 methane blue-violet, white), an optional pulse for the current minute, and a
 vibration when your phone disconnects.

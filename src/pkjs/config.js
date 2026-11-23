@@ -89,8 +89,19 @@ module.exports = [
         type: 'toggle',
         messageKey: 'ShowDate',
         label: 'Show date on flick',
-        description: 'A broadcast-style readout across the engines: day and date, and the day of the year. To have a flick show only the date, set Flick shows to One and pick your default rim.',
+        description: 'A readout across the engines while a flick is up. To have a flick show only the readout, set Flick shows to One and pick your default rim.',
         defaultValue: true
+      },
+      {
+        type: 'select',
+        messageKey: 'FlickReadout',
+        label: 'Flick readout',
+        description: 'Date band: day and date, and the day of the year, on a broadcast-style band. Throttle down: the engines drop to embers behind the time and date; when the flick ends they relight, and the heat chars the lettering black until it crumbles away.',
+        defaultValue: '0',
+        options: [
+          { label: 'Date band', value: '0' },
+          { label: 'Throttle down: time and date', value: '1' }
+        ]
       }
     ]
   },

@@ -1,7 +1,7 @@
 {
   "name": "ignition-face",
   "author": "Skyler",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "keywords": [
     "pebble-app"
   ],
@@ -13,8 +13,7 @@
     "sdkVersion": "3",
     "enableMultiJS": true,
     "targetPlatforms": [
-      "gabbro",
-      "chalk"
+      "gabbro"
     ],
     "capabilities": [
       "configurable",
@@ -55,7 +54,8 @@
       "PulseMinutes",
       "FlickRearrange",
       "ShowSeconds",
-      "FlickSeconds"
+      "FlickSeconds",
+      "FlickReadout"
     ],
     "resources": {
       "media": []
